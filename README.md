@@ -1,60 +1,80 @@
+
 # Product Analytics Engine: Funnel & Cohort Analysis
 
-An enterprise-grade product analytics project built to process high-volume eCommerce event logs, track conversion funnels, segment behavioral cohorts, and identify critical UI/UX bottlenecks. This project moves from raw, memory-heavy event data to actionable product management strategies.
+A product analytics project built to process high-volume eCommerce event logs, analyze event-based conversion metrics, segment user behavior, and identify potential opportunities to improve the shopping experience.
 
 ## Project Overview
 
-Understanding user drop-off and engagement distribution is critical for product growth. This project analyzes 5 months of Cosmetics eCommerce event logs (originally ~2.5GB, 20M+ rows). By building a memory-efficient data pipeline, conducting SQL-based funnel analysis, and visualizing the outputs, this engine identifies exact points of user friction and quantifies the behavior of distinct user segments.
+This project analyzes five months of Cosmetics eCommerce event logs (approximately 2.5 GB and 20M+ source records). A Python/Pandas pipeline selects relevant columns and samples sessions separately from each monthly file. The sampled event data is then analyzed using SQLite and SQL to calculate session-level event counts and segment users based on recorded behavior.
+
+The analysis identifies a substantial gap between sessions with cart activity and sessions with purchase activity. Behavioral segmentation also highlights a sample-based cohort with a high share of recorded interactions relative to its population size. These observations inform proposed product experiments to investigate checkout friction and cart inactivity.
 
 ## Core Business Insights
 
-* **Top-of-Funnel Drop-off:** There is a severe bottleneck between the `Cart` (32,595 unique sessions) and `Purchase` (5,091 unique sessions) stages. The absolute drop-off rate from Cart to Purchase is **84.4%**.
-* **Cohort Discovery:** Behavioral segmentation revealed that **"Cart Abandoners"** (users who add to cart but record 0 purchases) make up only **16%** of the total user base, yet they generate a massive **52.8%** of all platform interactions.
+- **Cart-to-Purchase Event-Count Gap:** The existing analysis reports 32,595 distinct sessions with cart events and 5,091 distinct sessions with purchase events. The difference is equivalent to an 84.4% gap relative to the cart-session count. The current SQL query counts sessions independently by event type and does not enforce chronological funnel progression, so this should not be interpreted as a verified sequential cart-abandonment rate.
+- **Behavioral Cohort Discovery:** The existing cohort summary reports that "Cart Abandoners" account for 16% of observed users and 52.8% of recorded interactions in the analyzed sample. In the current implementation, this cohort consists of users with cart activity but no purchase recorded in the sampled event data. Because sessions are sampled before user-level aggregation, this classification may not reflect a user's complete purchase history.
 
 ## Product Strategy Recommendations
 
-Based on the data, the following product interventions are proposed to recover lost revenue at the bottom of the funnel:
+The following are hypotheses for further investigation and experimentation, not interventions whose impact has already been proven.
 
-1. **1-Click Guest Checkout:** Reduce friction for the 84.4% of users abandoning their carts by minimizing mandatory form fields and account creation walls.
-2. **Time-Delayed Exit-Intent Discounts:** Implement automated CRM triggers offering a 10% discount for carts that remain idle for >2 hours, specifically targeting the highly active "Cart Abandoners" cohort.
+1. **Simplified Guest Checkout:** Investigate whether mandatory account creation, excessive form fields, or other checkout steps create unnecessary friction. If the evidence supports this hypothesis, test a simplified guest-checkout experience and measure completed-purchase conversion alongside relevant guardrail metrics.
+2. **Cart-Idle Incentive Experiment:** Evaluate whether a targeted incentive can increase completed purchases among eligible sessions with cart activity. A 10% discount after more than two hours of inactivity is a proposed starting hypothesis, not an experimentally established optimal discount or timing threshold. Measure incremental purchases and profitability against an appropriate control group.
 
 ## Data Engineering & Analytics Pipeline
 
-### 1. Data Engineering (`data_pipeline.py`)
+### 1. Data Processing (`data_pipeline.py`)
 
-Processing a 2.5GB dataset requires memory optimization. A Python/Pandas script was built to iterate through the raw CSV in chunks, forcing garbage collection (`gc.collect()`), and applying stratified sampling. This resulted in a statistically balanced dataset of 150,000 unique user sessions without exhausting local memory limits.
+The pipeline processes five monthly CSV files separately, loads selected columns, samples up to 30,000 distinct non-null session IDs per month without replacement, and retains the event records associated with those selected sessions.
+
+The intended sampling target is up to 150,000 sessions across the five months, subject to the availability of eligible sessions in each file. The sampled event records are combined into `stratified_funnel_data.csv` and can be compressed for storage.
+
+The implementation reads each monthly file into a DataFrame; it does not use chunked CSV reading. It deletes the full monthly DataFrame and calls `gc.collect()` after filtering to help manage memory.
+
+The sampling procedure applies a fixed target per month. Equal allocation does not necessarily preserve the original traffic proportions across months, and the current code does not set a random seed. The resulting sample should therefore be treated as an exploratory analysis dataset rather than assumed to be a statistically representative sample of the entire five-month population.
 
 ### 2. SQL Analytics (`sql_analytics.py` & `sql_cohorts.py`)
 
-The sampled data is ingested into a local SQLite database (`ecommerce_analytics.db`).
+The sampled data is loaded into a local SQLite database named `ecommerce_analytics.db`.
 
-* **Funnel Analysis:** Tracks unique sessions strictly across the AARRR funnel sequence (`View` → `Cart` → `Purchase`).
-* **Cohort Segmentation:** Utilizes Common Table Expressions (CTEs) and `CASE WHEN` logic to group users into 4 distinct behavioral cohorts based on event frequencies and conversion history.
+- **Event-Type Session Analysis:** `sql_analytics.py` groups records by `event_type` and counts distinct `user_session` values. This provides the number of sessions associated with each event type. It does not enforce a chronological `View → Cart → Purchase` sequence or independently calculate a strict sequential funnel.
+- **Cohort Segmentation:** `sql_cohorts.py` uses Common Table Expressions (CTEs), conditional aggregation and `CASE WHEN` rules to assign users to four mutually exclusive behavioral cohorts based on their recorded purchases, cart events and views.
 
-### 3. Executive Dashboarding (Power BI)
+The cohort classification is based on observed activity in the sampled event records. A user with no recorded purchase in the sample may still have purchased during a session that was not sampled.
 
-The exported datasets (`stratified_funnel_data.zip` and `user_segments.csv`) are modeled in **Power BI** to generate the final executive dashboard. This includes:
+### 3. Python Cohort Analysis (`cohort_segmentation.py`)
 
-* A visual **Funnel Chart** tracking distinct session progression.
-* Comparative **Donut Charts** mapping population size versus engagement share across user cohorts.
+The Python script uses a pivot table to calculate event counts per user, applies the same four cohort rules, computes total recorded interactions, and exports user-level results to `user_segments.csv`.
+
+The SQL and Python implementations provide complementary ways to analyze and summarize user behavior. Their cohort counts and interaction metrics should be reconciled before the findings are used for formal business reporting.
+
+### 4. Planned Executive Dashboard (Power BI)
+
+The processed datasets are intended for use in Power BI to create an executive dashboard with:
+
+- A sequential funnel chart showing validated session progression and stage-to-stage conversion.
+- Comparative charts showing cohort population share versus engagement share.
+- Supporting metric definitions and notes on sample-based cohort classification.
+
+The repository contains the data-processing scripts and exported datasets; the Power BI report file is not included in the current repository.
 
 ## Repository Structure
 
 ```text
 product-analytics-engine/
 │
-├── data_pipeline.py             # Memory-efficient chunking and stratified sampling logic
-├── sql_analytics.py             # SQL queries for tracking session-level conversion funnels
-├── sql_cohorts.py               # SQL logic utilizing CTEs for behavioral segmentation
-├── cohort_segmentation.py       # Python script for generating final segment aggregations
-├── user_segments.csv            # Processed output: aggregated user cohorts
-├── stratified_funnel_data.zip   # Processed output: compressed sample of funnel event logs
-└── README.md                    # Project documentation
-
+├── data_pipeline.py
+├── sql_analytics.py
+├── sql_cohorts.py
+├── cohort_segmentation.py
+├── user_segments.csv
+├── stratified_funnel_data.zip
+└── README.md
 ```
 
 ## Technologies Used
 
-* **Python:** Pandas, memory management (`gc`), chunking operations.
-* **SQL:** SQLite, CTEs, conditional aggregations.
-* **Power BI:** Data visualization and executive dashboarding.
+- **Python:** Pandas, NumPy, garbage collection and data processing.
+- **SQL:** SQLite, CTEs, conditional aggregation, grouping and distinct counts.
+- **Data Analytics:** Funnel metrics, behavioral segmentation and engagement-share analysis.
+- **Planned Visualization:** Power BI for executive reporting.
